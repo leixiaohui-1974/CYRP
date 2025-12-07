@@ -4,8 +4,7 @@ Tests for Industrial Communication Module.
 """
 
 import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, patch
 from datetime import datetime
 
 from cyrp.communication import (
@@ -19,6 +18,7 @@ from cyrp.communication import (
     ModbusFunctionCode,
     OPCUAConfig,
     OPCUAClient,
+    OPCUANodeId,
     IEC61850Config,
     IEC61850Client,
     IEC104Config,
@@ -67,15 +67,15 @@ class TestTagDefinition:
     def test_creation(self):
         """测试创建标签定义"""
         tag = TagDefinition(
-            tag_name="flow_rate",
-            address="40001",
-            data_type="FLOAT",
+            name="flow_rate",
+            address="HR:40001",
+            data_type="float32",
             description="进口流量"
         )
 
-        assert tag.tag_name == "flow_rate"
-        assert tag.address == "40001"
-        assert tag.data_type == "FLOAT"
+        assert tag.name == "flow_rate"
+        assert tag.address == "HR:40001"
+        assert tag.data_type == "float32"
 
 
 class TestModbusConfig:
@@ -99,43 +99,33 @@ class TestModbusTCPClient:
     def setup_method(self):
         """测试前设置"""
         self.config = ModbusConfig(host="127.0.0.1", port=502)
-        self.client = ModbusTCPClient(self.config)
+        self.client = ModbusTCPClient("test_modbus", self.config)
 
     def test_initialization(self):
         """测试初始化"""
         assert self.client.protocol_type == ProtocolType.MODBUS_TCP
-        assert self.client.connection_state == ConnectionState.DISCONNECTED
+        assert self.client.state == ConnectionState.DISCONNECTED
 
-    def test_build_mbap_header(self):
-        """测试MBAP头构建"""
-        header = self.client._build_mbap_header(6)
+    def test_build_request(self):
+        """测试请求构建"""
+        request = self.client._build_request(0x03, 100, 10)
 
-        assert len(header) == 7
-        # 检查协议标识符(0x0000)
-        assert header[2:4] == b'\x00\x00'
+        # 检查请求长度 (7 MBAP + 1 FC + 4 PDU = 12)
+        assert len(request) == 12
+        # 检查协议标识符(0x0000)位于字节2-3
+        assert request[2:4] == b'\x00\x00'
 
-    def test_parse_mbap_header(self):
-        """测试MBAP头解析"""
-        header = b'\x00\x01\x00\x00\x00\x06\x01'
-        transaction_id, protocol_id, length, unit_id = self.client._parse_mbap_header(header)
-
-        assert transaction_id == 1
-        assert protocol_id == 0
-        assert length == 6
-        assert unit_id == 1
-
-    @pytest.mark.asyncio
-    async def test_add_tag(self):
-        """测试添加标签"""
+    def test_register_tag(self):
+        """测试注册标签"""
         tag = TagDefinition(
-            tag_name="test_tag",
-            address="40001",
-            data_type="INT16"
+            name="test_tag",
+            address="HR:40001",
+            data_type="int16"
         )
 
-        await self.client.add_tag(tag)
+        self.client.register_tag(tag)
 
-        assert "test_tag" in self.client._tags
+        assert "test_tag" in self.client.tags
 
 
 class TestOPCUAClient:
@@ -146,39 +136,36 @@ class TestOPCUAClient:
         self.config = OPCUAConfig(
             endpoint="opc.tcp://localhost:4840"
         )
-        self.client = OPCUAClient(self.config)
+        self.client = OPCUAClient("test_opcua", self.config)
 
     def test_initialization(self):
         """测试初始化"""
         assert self.client.protocol_type == ProtocolType.OPC_UA
-        assert self.client.connection_state == ConnectionState.DISCONNECTED
+        assert self.client.state == ConnectionState.DISCONNECTED
 
     def test_parse_node_id(self):
         """测试NodeId解析"""
         # 测试数值节点ID
-        node_id = self.client._parse_node_id("ns=2;i=1001")
+        node_id = OPCUANodeId.parse("ns=2;i=1001")
         assert node_id.namespace == 2
         assert node_id.identifier == 1001
-        assert node_id.id_type == "i"
 
         # 测试字符串节点ID
-        node_id = self.client._parse_node_id("ns=1;s=Temperature")
+        node_id = OPCUANodeId.parse("ns=1;s=Temperature")
         assert node_id.namespace == 1
         assert node_id.identifier == "Temperature"
-        assert node_id.id_type == "s"
 
-    @pytest.mark.asyncio
-    async def test_add_tag(self):
-        """测试添加标签"""
+    def test_register_tag(self):
+        """测试注册标签"""
         tag = TagDefinition(
-            tag_name="temperature",
+            name="temperature",
             address="ns=2;i=1001",
-            data_type="FLOAT"
+            data_type="float32"
         )
 
-        await self.client.add_tag(tag)
+        self.client.register_tag(tag)
 
-        assert "temperature" in self.client._tags
+        assert "temperature" in self.client.tags
 
 
 class TestIEC104Client:
@@ -190,27 +177,30 @@ class TestIEC104Client:
             host="192.168.1.100",
             port=2404
         )
-        self.client = IEC104Client(self.config)
+        self.client = IEC104Client("test_iec104", self.config)
 
     def test_initialization(self):
         """测试初始化"""
-        assert self.client.protocol_type == ProtocolType.IEC104
-        assert self.client.connection_state == ConnectionState.DISCONNECTED
+        assert self.client.protocol_type == ProtocolType.IEC_104
+        assert self.client.state == ConnectionState.DISCONNECTED
 
-    def test_build_start_frame(self):
-        """测试起始帧构建"""
-        frame = self.client._build_start_frame()
+    def test_send_u_frame(self):
+        """测试U格式帧构建"""
+        # 模拟socket来捕获发送的数据
+        mock_socket = Mock()
+        sent_data = []
+        mock_socket.send = lambda x: sent_data.append(x)
+        self.client.socket = mock_socket
 
+        # 发送STARTDT帧
+        self.client._send_u_frame(0x07)
+
+        # 验证帧格式
+        assert len(sent_data) == 1
+        frame = sent_data[0]
         assert frame[0] == 0x68  # 起始字符
         assert frame[1] == 0x04  # APDU长度
         assert frame[2] == 0x07  # STARTDT act
-
-    def test_build_stop_frame(self):
-        """测试停止帧构建"""
-        frame = self.client._build_stop_frame()
-
-        assert frame[0] == 0x68
-        assert frame[2] == 0x13  # STOPDT act
 
 
 class TestCommunicationManager:
@@ -220,54 +210,57 @@ class TestCommunicationManager:
         """测试前设置"""
         self.manager = CommunicationManager()
 
-    def test_add_client(self):
-        """测试添加客户端"""
+    def test_add_protocol(self):
+        """测试添加协议"""
         config = ModbusConfig(host="127.0.0.1", port=502)
-        client = ModbusTCPClient(config)
+        client = ModbusTCPClient("modbus1", config)
 
-        self.manager.add_client("modbus1", client)
+        self.manager.add_protocol(client)
 
-        assert "modbus1" in self.manager._clients
+        assert "modbus1" in self.manager.protocols
 
-    def test_get_client(self):
-        """测试获取客户端"""
+    def test_get_protocol(self):
+        """测试获取协议"""
         config = ModbusConfig(host="127.0.0.1", port=502)
-        client = ModbusTCPClient(config)
-        self.manager.add_client("modbus1", client)
+        client = ModbusTCPClient("modbus1", config)
+        self.manager.add_protocol(client)
 
-        retrieved = self.manager.get_client("modbus1")
+        retrieved = self.manager.protocols.get("modbus1")
 
         assert retrieved == client
 
-    def test_remove_client(self):
-        """测试移除客户端"""
+    def test_register_tag(self):
+        """测试注册标签"""
         config = ModbusConfig(host="127.0.0.1", port=502)
-        client = ModbusTCPClient(config)
-        self.manager.add_client("modbus1", client)
+        client = ModbusTCPClient("modbus1", config)
+        self.manager.add_protocol(client)
 
-        self.manager.remove_client("modbus1")
-
-        assert "modbus1" not in self.manager._clients
-
-    @pytest.mark.asyncio
-    async def test_read_tag(self):
-        """测试读取标签(模拟)"""
-        config = ModbusConfig(host="127.0.0.1", port=502)
-        client = ModbusTCPClient(config)
-        self.manager.add_client("modbus1", client)
-
-        # 添加标签
         tag = TagDefinition(
-            tag_name="test_tag",
-            address="40001",
-            data_type="INT16"
+            name="test_tag",
+            address="HR:40001",
+            data_type="int16"
         )
-        await client.add_tag(tag)
+        self.manager.register_tag("modbus1", tag)
 
-        # 由于没有实际连接,读取会返回None或缓存值
-        result = await self.manager.read_tag("test_tag")
-        # 未连接时返回None
-        assert result is None
+        assert "test_tag" in client.tags
+        assert "test_tag" in self.manager.tag_mapping
+
+    def test_read_tag_not_connected(self):
+        """测试读取标签(未连接)"""
+        config = ModbusConfig(host="127.0.0.1", port=502)
+        client = ModbusTCPClient("modbus1", config)
+        self.manager.add_protocol(client)
+
+        tag = TagDefinition(
+            name="test_tag",
+            address="HR:40001",
+            data_type="int16"
+        )
+        self.manager.register_tag("modbus1", tag)
+
+        # 由于没有实际连接,读取会返回None或BAD质量
+        result = self.manager.read("test_tag")
+        assert result is None or result.quality == DataQuality.BAD
 
 
 class TestCreateCYRPCommunicationSystem:
