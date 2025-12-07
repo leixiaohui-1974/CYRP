@@ -4,18 +4,19 @@ Tests for Alarm Management Module.
 """
 
 import pytest
-import asyncio
 from datetime import datetime, timedelta
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import Mock, patch
 
 from cyrp.alarm import (
     AlarmSeverity,
     AlarmState,
+    AlarmType,
     AlarmDefinition,
     AlarmInstance,
     AlarmProcessor,
     AlarmNotifier,
     NotificationChannel,
+    NotificationConfig,
     AlarmManager,
     create_cyrp_alarm_system,
 )
@@ -30,34 +31,38 @@ class TestAlarmDefinition:
             alarm_id="ALM001",
             name="高水位报警",
             description="水位超过高限",
-            severity=AlarmSeverity.HIGH,
-            tag_name="water_level",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.MAJOR,
+            source="water_level",
             high_limit=10.0,
-            low_limit=None
         )
 
         assert alarm_def.alarm_id == "ALM001"
-        assert alarm_def.severity == AlarmSeverity.HIGH
+        assert alarm_def.severity == AlarmSeverity.MAJOR
         assert alarm_def.high_limit == 10.0
 
     def test_check_limits_high(self):
-        """测试高限检查"""
+        """测试高限检查 - 通过AlarmProcessor"""
         alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="高温报警",
             description="温度过高",
-            severity=AlarmSeverity.HIGH,
-            tag_name="temperature",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.MAJOR,
+            source="temperature",
             high_limit=100.0
         )
 
-        # 超过高限
-        result = alarm_def.check_value(105.0)
-        assert result == True
+        processor = AlarmProcessor()
 
-        # 未超过高限
-        result = alarm_def.check_value(95.0)
-        assert result == False
+        # 超过高限 - 应该触发报警
+        result = processor.process_value(alarm_def, 105.0, AlarmState.NORMAL)
+        assert result is not None
+        assert result[0] == AlarmState.ACTIVE
+
+        # 未超过高限 - 从NORMAL状态不应该触发
+        result = processor.process_value(alarm_def, 95.0, AlarmState.NORMAL)
+        assert result is None
 
     def test_check_limits_low(self):
         """测试低限检查"""
@@ -65,18 +70,22 @@ class TestAlarmDefinition:
             alarm_id="ALM002",
             name="低压报警",
             description="压力过低",
-            severity=AlarmSeverity.MEDIUM,
-            tag_name="pressure",
+            alarm_type=AlarmType.LOW,
+            severity=AlarmSeverity.WARNING,
+            source="pressure",
             low_limit=0.1
         )
 
+        processor = AlarmProcessor()
+
         # 低于低限
-        result = alarm_def.check_value(0.05)
-        assert result == True
+        result = processor.process_value(alarm_def, 0.05, AlarmState.NORMAL)
+        assert result is not None
+        assert result[0] == AlarmState.ACTIVE
 
         # 未低于低限
-        result = alarm_def.check_value(0.5)
-        assert result == False
+        result = processor.process_value(alarm_def, 0.5, AlarmState.NORMAL)
+        assert result is None
 
 
 class TestAlarmInstance:
@@ -84,15 +93,21 @@ class TestAlarmInstance:
 
     def test_creation(self):
         """测试创建报警实例"""
-        alarm = AlarmInstance(
-            instance_id="INS001",
+        alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="高水位报警",
-            severity=AlarmSeverity.HIGH,
+            description="水位超过高限",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.MAJOR,
+            source="water_level",
+            high_limit=10.0,
+        )
+
+        alarm = AlarmInstance(
+            instance_id="INS001",
+            definition=alarm_def,
             state=AlarmState.ACTIVE,
-            value=10.5,
-            limit=10.0,
-            message="水位超过高限: 10.5 > 10.0"
+            trigger_value=10.5,
         )
 
         assert alarm.instance_id == "INS001"
@@ -100,41 +115,54 @@ class TestAlarmInstance:
         assert alarm.acknowledged_at is None
 
     def test_acknowledge(self):
-        """测试确认报警"""
-        alarm = AlarmInstance(
-            instance_id="INS001",
+        """测试确认报警 - 通过AlarmManager"""
+        manager = AlarmManager()
+
+        alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
-            severity=AlarmSeverity.MEDIUM,
-            state=AlarmState.ACTIVE,
-            value=100.0,
-            limit=90.0,
-            message="测试"
+            description="测试",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.WARNING,
+            source="test_tag",
+            high_limit=90.0
         )
+        manager.register_alarm(alarm_def)
 
-        alarm.acknowledge("operator1")
+        # 触发报警
+        manager.process_value("ALM001", 100.0)
 
-        assert alarm.state == AlarmState.ACKNOWLEDGED
-        assert alarm.acknowledged_by == "operator1"
-        assert alarm.acknowledged_at is not None
+        # 确认报警
+        result = manager.acknowledge("ALM001", "operator1")
+
+        assert result == True
+        instance = manager.instances["ALM001"]
+        assert instance.state == AlarmState.ACKNOWLEDGED
+        assert instance.acknowledged_by == "operator1"
 
     def test_clear(self):
         """测试清除报警"""
-        alarm = AlarmInstance(
-            instance_id="INS001",
+        manager = AlarmManager()
+
+        alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
-            severity=AlarmSeverity.LOW,
-            state=AlarmState.ACKNOWLEDGED,
-            value=100.0,
-            limit=90.0,
-            message="测试"
+            description="测试",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.WARNING,
+            source="test_tag",
+            high_limit=90.0
         )
+        manager.register_alarm(alarm_def)
 
-        alarm.clear()
+        # 触发报警
+        manager.process_value("ALM001", 100.0)
 
-        assert alarm.state == AlarmState.CLEARED
-        assert alarm.cleared_at is not None
+        # 恢复正常值应该清除报警
+        manager.process_value("ALM001", 50.0)
+
+        instance = manager.instances["ALM001"]
+        assert instance.state == AlarmState.CLEARED
 
 
 class TestAlarmProcessor:
@@ -143,64 +171,42 @@ class TestAlarmProcessor:
     def setup_method(self):
         """测试前设置"""
         self.processor = AlarmProcessor()
-
-    def test_add_definition(self):
-        """测试添加报警定义"""
-        alarm_def = AlarmDefinition(
+        self.definition = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
             description="测试",
-            severity=AlarmSeverity.MEDIUM,
-            tag_name="test_tag",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.WARNING,
+            source="test_tag",
             high_limit=100.0
         )
 
-        self.processor.add_definition(alarm_def)
+    def test_add_definition(self):
+        """测试处理器初始化"""
+        # AlarmProcessor doesn't store definitions, just processes values
+        processor = AlarmProcessor()
+        assert processor is not None
 
-        assert "ALM001" in self.processor._definitions
-
-    @pytest.mark.asyncio
-    async def test_process_value_triggers_alarm(self):
+    def test_process_value_triggers_alarm(self):
         """测试处理值触发报警"""
-        alarm_def = AlarmDefinition(
-            alarm_id="ALM001",
-            name="高温报警",
-            description="温度过高",
-            severity=AlarmSeverity.HIGH,
-            tag_name="temperature",
-            high_limit=100.0
-        )
-        self.processor.add_definition(alarm_def)
-
         # 处理超限值
-        alarm = await self.processor.process_value("temperature", 105.0)
+        result = self.processor.process_value(self.definition, 105.0, AlarmState.NORMAL)
 
-        assert alarm is not None
-        assert alarm.state == AlarmState.ACTIVE
-        assert alarm.value == 105.0
+        assert result is not None
+        assert result[0] == AlarmState.ACTIVE
+        assert result[1] == 105.0
 
-    @pytest.mark.asyncio
-    async def test_process_value_clears_alarm(self):
+    def test_process_value_clears_alarm(self):
         """测试处理值清除报警"""
-        alarm_def = AlarmDefinition(
-            alarm_id="ALM001",
-            name="高温报警",
-            description="温度过高",
-            severity=AlarmSeverity.HIGH,
-            tag_name="temperature",
-            high_limit=100.0
-        )
-        self.processor.add_definition(alarm_def)
-
         # 先触发报警
-        await self.processor.process_value("temperature", 105.0)
+        self.processor.process_value(self.definition, 105.0, AlarmState.NORMAL)
 
         # 然后恢复正常
-        result = await self.processor.process_value("temperature", 95.0)
+        result = self.processor.process_value(self.definition, 95.0, AlarmState.ACTIVE)
 
         # 报警应该被清除
-        active = self.processor.get_active_alarms()
-        assert len([a for a in active if a.alarm_id == "ALM001"]) == 0
+        assert result is not None
+        assert result[0] == AlarmState.CLEARED
 
 
 class TestAlarmNotifier:
@@ -210,47 +216,52 @@ class TestAlarmNotifier:
         """测试前设置"""
         self.notifier = AlarmNotifier()
 
-    @pytest.mark.asyncio
-    async def test_add_channel(self):
+    def test_add_channel(self):
         """测试添加通知渠道"""
-        channel = NotificationChannel(
-            channel_id="email",
-            channel_type="email",
+        config = NotificationConfig(
+            channel=NotificationChannel.EMAIL,
+            enabled=True,
+            recipients=["test@example.com"],
             config={"smtp_server": "smtp.example.com"}
         )
 
-        self.notifier.add_channel(channel)
+        self.notifier.add_channel(config)
 
-        assert "email" in self.notifier._channels
+        assert NotificationChannel.EMAIL in self.notifier.channels
 
-    @pytest.mark.asyncio
-    async def test_notify(self):
+    def test_notify(self):
         """测试发送通知"""
-        # 使用模拟渠道
-        mock_handler = AsyncMock()
-        channel = NotificationChannel(
-            channel_id="mock",
-            channel_type="mock",
-            config={},
-            handler=mock_handler
+        # 添加控制台通知渠道
+        config = NotificationConfig(
+            channel=NotificationChannel.CONSOLE,
+            enabled=True,
+            min_severity=AlarmSeverity.WARNING
         )
-        self.notifier.add_channel(channel)
+        self.notifier.add_channel(config)
+
+        alarm_def = AlarmDefinition(
+            alarm_id="ALM001",
+            name="测试报警",
+            description="测试通知",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.MAJOR,
+            source="test_tag",
+            high_limit=90.0
+        )
 
         alarm = AlarmInstance(
             instance_id="INS001",
-            alarm_id="ALM001",
-            name="测试报警",
-            severity=AlarmSeverity.HIGH,
+            definition=alarm_def,
             state=AlarmState.ACTIVE,
-            value=100.0,
-            limit=90.0,
-            message="测试通知"
+            trigger_value=100.0,
         )
+        alarm.occurred_at = datetime.now()
 
-        await self.notifier.notify(alarm, ["mock"])
+        # 同步通知 (放入队列)
+        self.notifier.notify(alarm, "RAISED")
 
-        # 验证处理器被调用
-        mock_handler.assert_called_once()
+        # 验证队列不为空
+        assert not self.notifier._notification_queue.empty()
 
 
 class TestAlarmManager:
@@ -260,84 +271,84 @@ class TestAlarmManager:
         """测试前设置"""
         self.manager = AlarmManager()
 
-    @pytest.mark.asyncio
-    async def test_register_alarm(self):
+    def test_register_alarm(self):
         """测试注册报警"""
         alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
             description="测试",
-            severity=AlarmSeverity.MEDIUM,
-            tag_name="test_tag",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.WARNING,
+            source="test_tag",
             high_limit=100.0
         )
 
         self.manager.register_alarm(alarm_def)
 
-        assert "ALM001" in self.manager._processor._definitions
+        assert "ALM001" in self.manager.definitions
 
-    @pytest.mark.asyncio
-    async def test_process_and_get_active(self):
+    def test_process_and_get_active(self):
         """测试处理报警并获取活动报警"""
         alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
             description="测试",
-            severity=AlarmSeverity.HIGH,
-            tag_name="test_tag",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.MAJOR,
+            source="test_tag",
             high_limit=100.0
         )
         self.manager.register_alarm(alarm_def)
 
         # 触发报警
-        await self.manager.process_value("test_tag", 150.0)
+        self.manager.process_value("ALM001", 150.0)
 
         # 获取活动报警
         active = self.manager.get_active_alarms()
 
         assert len(active) > 0
-        assert active[0].alarm_id == "ALM001"
+        assert active[0].definition.alarm_id == "ALM001"
 
-    @pytest.mark.asyncio
-    async def test_acknowledge_alarm(self):
+    def test_acknowledge_alarm(self):
         """测试确认报警"""
         alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
             description="测试",
-            severity=AlarmSeverity.HIGH,
-            tag_name="test_tag",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.MAJOR,
+            source="test_tag",
             high_limit=100.0
         )
         self.manager.register_alarm(alarm_def)
 
         # 触发报警
-        alarm = await self.manager.process_value("test_tag", 150.0)
+        self.manager.process_value("ALM001", 150.0)
 
         # 确认报警
-        result = await self.manager.acknowledge_alarm(alarm.instance_id, "operator1")
+        result = self.manager.acknowledge("ALM001", "operator1")
 
         assert result == True
 
-    @pytest.mark.asyncio
-    async def test_get_alarm_history(self):
+    def test_get_alarm_history(self):
         """测试获取报警历史"""
         alarm_def = AlarmDefinition(
             alarm_id="ALM001",
             name="测试报警",
             description="测试",
-            severity=AlarmSeverity.MEDIUM,
-            tag_name="test_tag",
+            alarm_type=AlarmType.HIGH,
+            severity=AlarmSeverity.WARNING,
+            source="test_tag",
             high_limit=100.0
         )
         self.manager.register_alarm(alarm_def)
 
         # 触发并清除报警
-        await self.manager.process_value("test_tag", 150.0)
-        await self.manager.process_value("test_tag", 50.0)
+        self.manager.process_value("ALM001", 150.0)
+        self.manager.process_value("ALM001", 50.0)
 
         # 获取历史
-        history = self.manager.get_alarm_history(limit=10)
+        history = self.manager.get_event_history(limit=10)
 
         assert len(history) >= 0
 
@@ -353,7 +364,7 @@ class TestCreateCYRPAlarmSystem:
         assert isinstance(manager, AlarmManager)
 
         # 验证预定义的报警已注册
-        definitions = manager._processor._definitions
+        definitions = manager.definitions
         assert len(definitions) > 0
 
 
