@@ -1,0 +1,19 @@
+{
+  "tunnel_length": 4250.0,
+  "tunnel_diameter": 7.0,
+  "design_flow": 265.0,
+  "simulation_dt": 0.1,
+  "mpc_sample_time": 60.0,
+  "mpc_horizon": 20,
+  "pid_enabled": true,
+  "max_pressure": 1000000.0,
+  "min_pressure": -50000.0,
+  "max_flow_imbalance": 0.1,
+  "log_level": "INFO",
+  "log_file": null,
+  "extra": {
+    "manning_n": 0.014,
+    "wave_speed": 1000.0,
+    "burial_depth": 70.0
+  }
+}
