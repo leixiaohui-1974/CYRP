@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yellow River Crossing - Autonomous Digital Twin</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        .grid { display: grid; grid-template-columns: 250px 1fr 300px; gap: 20px; height: 95vh; }
+        .panel { background: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; }
+        h2, h3 { color: #90caf9; margin-top: 0; }
+
+        .btn { width: 100%; padding: 10px; margin-bottom: 5px; background: #333; color: white; border: 1px solid #555; cursor: pointer; }
+        .btn:hover { background: #444; }
+        .btn-active { background: #1976d2; }
+
+        .indicator { padding: 10px; margin-bottom: 5px; background: #263238; border-radius: 4px; font-weight: bold; }
+        .status-ok { color: #66bb6a; }
+        .status-warn { color: #ffa726; }
+        .status-err { color: #ef5350; }
+
+        canvas { width: 100%; height: 200px; background: #000; }
+
+        .profile-view { height: 300px; position: relative; background: #000; border: 1px solid #444; overflow: hidden; }
+        .soil-layer { position: absolute; top: 0; bottom: 0; left: 0; right: 0; background: linear-gradient(to bottom, #795548 60%, #3e2723 100%); opacity: 0.3; }
+        .tunnel-line { position: absolute; height: 10px; background: #555; width: 100%; top: 70%; }
+        .water-line { position: absolute; height: 6px; background: #29b6f6; width: 100%; top: 70.2%; transition: all 0.5s; }
+        .sensor-dot { position: absolute; width: 4px; height: 4px; border-radius: 50%; top: 69%; }
+    </style>
+</head>
+<body>
+
+<div class="grid">
+    <!-- Left: Controls -->
+    <div class="panel">
+        <h2>Operations</h2>
+        <button class="btn" onclick="api('control', {command: 'start'})">Start Autonomy</button>
+        <button class="btn" onclick="api('control', {command: 'stop'})">Stop</button>
+        <button class="btn" onclick="api('control', {command: 'reset'})">Reset System</button>
+
+        <h3>Drill Injection</h3>
+        <button class="btn" onclick="api('drill', {name: 'S4_MAINTENANCE'})">Drill: Maintenance (S4)</button>
+        <button class="btn" onclick="api('drill', {name: 'S5_LEAK'})">Drill: Leakage (S5)</button>
+        <button class="btn" onclick="api('drill', {name: 'S6_EARTHQUAKE'})">Drill: Earthquake (S6)</button>
+
+        <h3>Environment</h3>
+        <div class="indicator">River Level: <span id="river-lvl">96.22</span> m</div>
+        <div class="indicator">Seismic Accel: <span id="seismic">0.00</span> g</div>
+    </div>
+
+    <!-- Center: Visuals -->
+    <div class="panel">
+        <h2>Digital Twin: Cross-Section (Inlet -> Outlet)</h2>
+        <div class="profile-view" id="profile">
+            <div class="soil-layer"></div>
+            <!-- Tunnel SVG overlay handled by JS -->
+            <svg id="tunnel-svg" width="100%" height="100%" preserveAspectRatio="none">
+                <!-- Ramp -->
+                <path d="M0,50 L10,80 L90,81 L100,50" stroke="#777" stroke-width="20" fill="none" />
+                <path id="water-path" d="" stroke="#29b6f6" stroke-width="14" fill="none" />
+            </svg>
+        </div>
+
+        <h3>Sensor Fusion Data</h3>
+        <canvas id="sensorChart"></canvas>
+    </div>
+
+    <!-- Right: Intelligence -->
+    <div class="panel">
+        <h2>Autonomous Brain</h2>
+        <div class="indicator">
+            Perceived Mode: <br>
+            <span id="mode-disp" class="status-ok">S1_NOMINAL</span>
+        </div>
+        <div class="indicator">
+            Target Strategy: <br>
+            <span id="strat-disp">OPTIMAL_FLOW</span>
+        </div>
+
+        <h3>Active Anomalies</h3>
+        <ul id="anomaly-list" style="color: #ef5350;"></ul>
+
+        <h3>Information Feeds</h3>
+        <div style="font-size: 0.8em; color: #aaa;">
+            <div>Maint Plan: <span id="maint-status">NONE</span></div>
+            <div>Forecast: <span id="weather-status">CLEAR</span></div>
+            <div>Demand: <span id="demand-status">265</span> m³/s</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function api(endpoint, data) {
+        fetch('/api/'+endpoint, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+    }
+
+    // Chart Setup
+    const ctx = document.getElementById('sensorChart').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: Array.from({length: 50}, (_, i) => i),
+            datasets: [{
+                label: 'Acoustic (DAS)',
+                data: [],
+                backgroundColor: 'rgba(54, 162, 235, 0.5)'
+            }, {
+                label: 'Vibration (MEMS)',
+                data: [],
+                backgroundColor: 'rgba(255, 99, 132, 0.5)'
+            }]
+        },
+        options: { animation: false, scales: { y: { beginAtZero: true } } }
+    });
+
+    setInterval(() => {
+        fetch('/api/status').then(r => r.json()).then(data => {
+            // Update Text
+            document.getElementById('river-lvl').innerText = data.physics.env.river_level.toFixed(2);
+            document.getElementById('seismic').innerText = data.physics.env.seismic_accel.toFixed(2);
+
+            const mode = data.mode;
+            const modeEl = document.getElementById('mode-disp');
+            modeEl.innerText = mode;
+            modeEl.className = mode.includes('NOMINAL') ? 'status-ok' : 'status-err';
+
+            document.getElementById('strat-disp').innerText = data.objectives.strategy || 'IDLE';
+
+            const list = document.getElementById('anomaly-list');
+            list.innerHTML = '';
+            data.anomalies.forEach(a => {
+                const li = document.createElement('li');
+                li.innerText = a;
+                list.appendChild(li);
+            });
+
+            // Charts (Tube 1 for now)
+            // Need to get sensor data. Ideally passed in status.
+            // For now, let's visualize Physics Q as proxy
+            // Wait, we need real sensor viz.
+            // Let's rely on anomalies list for now and showing Q profile
+
+            // Update Water Path in SVG
+            // Map 50 nodes to SVG coordinates
+            // Simple Line
+            const nodes = data.physics.tubes[0].nodes;
+            let path = "M ";
+            nodes.forEach((n, i) => {
+                const x_perc = (i / 50) * 100;
+                // Height: H is Head.
+                // Let's map H relative to Z_bottom
+                // But H varies little.
+                // Let's visualize Q?
+                const y_base = 80;
+                // Just draw a flat line for now
+                path += `${x_perc} ${y_base} `;
+            });
+            // Simplified viz for demo
+
+        });
+    }, 500);
+</script>
+
+</body>
+</html>
