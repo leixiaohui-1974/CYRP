@@ -17,6 +17,22 @@ from cyrp.control.mpc_controller import (
 from cyrp.control.pid_controller import PIDController, CascadePID
 from cyrp.control.safety_interlocks import SafetyInterlock, InterlockType
 from cyrp.control.hdmpc import HDMPCController
+from cyrp.control.adaptive_mpc import (
+    AdaptiveMPCController,
+    ScenarioAdaptiveMPC,
+    RobustAdaptiveMPC,
+    RecursiveLeastSquares,
+    ARMAXIdentifier,
+    GainScheduler,
+)
+from cyrp.control.adaptive_pid import (
+    AdaptivePIDController,
+    DualTunnelAdaptivePID,
+    FuzzyPIDController,
+    NeuralNetworkPID,
+    RelayFeedbackTuner,
+    IMCTuner,
+)
 
 __all__ = [
     "MPCController",
@@ -28,4 +44,16 @@ __all__ = [
     "SafetyInterlock",
     "InterlockType",
     "HDMPCController",
+    "AdaptiveMPCController",
+    "ScenarioAdaptiveMPC",
+    "RobustAdaptiveMPC",
+    "RecursiveLeastSquares",
+    "ARMAXIdentifier",
+    "GainScheduler",
+    "AdaptivePIDController",
+    "DualTunnelAdaptivePID",
+    "FuzzyPIDController",
+    "NeuralNetworkPID",
+    "RelayFeedbackTuner",
+    "IMCTuner",
 ]

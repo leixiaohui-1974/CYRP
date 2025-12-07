@@ -22,6 +22,14 @@ from cyrp.perception.sensors import (
 from cyrp.perception.fusion import DataFusionEngine
 from cyrp.perception.classifier import ScenarioClassifier
 from cyrp.perception.perception_system import PerceptionSystem
+from cyrp.perception.advanced_classifier import (
+    AdvancedScenarioClassifier,
+    FeatureExtractor,
+    PatternRecognizer,
+    AnomalyDetector,
+    BayesianClassifier,
+    IsolationForest,
+)
 
 __all__ = [
     "DASensor",
@@ -33,4 +41,10 @@ __all__ = [
     "DataFusionEngine",
     "ScenarioClassifier",
     "PerceptionSystem",
+    "AdvancedScenarioClassifier",
+    "FeatureExtractor",
+    "PatternRecognizer",
+    "AnomalyDetector",
+    "BayesianClassifier",
+    "IsolationForest",
 ]

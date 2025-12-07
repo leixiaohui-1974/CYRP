@@ -14,6 +14,13 @@ from cyrp.scenarios.scenario_definitions import (
     ScenarioFamily,
     SCENARIO_REGISTRY
 )
+from cyrp.scenarios.enhanced_scenario_generator import (
+    EnhancedScenarioGenerator,
+    SignalGenerator,
+    BoundaryCondition,
+    ScenarioComplexity,
+    TemporalPattern,
+)
 
 __all__ = [
     "ScenarioManager",
@@ -23,4 +30,9 @@ __all__ = [
     "ScenarioDomain",
     "ScenarioFamily",
     "SCENARIO_REGISTRY",
+    "EnhancedScenarioGenerator",
+    "SignalGenerator",
+    "BoundaryCondition",
+    "ScenarioComplexity",
+    "TemporalPattern",
 ]
