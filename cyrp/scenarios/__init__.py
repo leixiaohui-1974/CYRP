@@ -6,7 +6,7 @@ Scenario Management System for CYRP.
 """
 
 from cyrp.scenarios.scenario_manager import ScenarioManager
-from cyrp.scenarios.scenario_generator import ScenarioGenerator
+from cyrp.scenarios.scenario_generator import ScenarioGenerator, TestScenario
 from cyrp.scenarios.scenario_definitions import (
     Scenario,
     ScenarioType,
@@ -25,6 +25,7 @@ from cyrp.scenarios.enhanced_scenario_generator import (
 __all__ = [
     "ScenarioManager",
     "ScenarioGenerator",
+    "TestScenario",
     "Scenario",
     "ScenarioType",
     "ScenarioDomain",

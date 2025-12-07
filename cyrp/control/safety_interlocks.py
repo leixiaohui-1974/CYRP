@@ -7,7 +7,7 @@ Safety Interlock System for CYRP.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, List, Dict, Callable
+from typing import Optional, Tuple, List, Dict, Callable, Any
 from enum import Enum, auto
 import numpy as np
 
