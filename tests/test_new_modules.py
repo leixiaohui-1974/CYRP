@@ -1660,5 +1660,109 @@ class TestPersistenceManager:
         assert AggregationType.MEAN.value == "mean"
 
 
+class TestIntegratedLauncher:
+    """集成启动器测试"""
+
+    def test_config_defaults(self):
+        """测试配置默认值"""
+        from cyrp.launcher import CYRPApplicationConfig
+
+        config = CYRPApplicationConfig()
+
+        assert config.api_port == 8080
+        assert config.ws_port == 8081
+        assert config.env == 'development'
+        assert config.flush_interval == 10.0
+        assert config.buffer_size == 1000
+
+    def test_config_from_env(self):
+        """测试从环境变量读取配置"""
+        import os
+        from cyrp.launcher import CYRPApplicationConfig
+
+        # 设置环境变量
+        os.environ['CYRP_API_PORT'] = '9090'
+        os.environ['CYRP_ENV'] = 'production'
+
+        config = CYRPApplicationConfig()
+
+        assert config.api_port == 9090
+        assert config.env == 'production'
+
+        # 清理
+        del os.environ['CYRP_API_PORT']
+        del os.environ['CYRP_ENV']
+
+    def test_system_initialization(self):
+        """测试系统初始化"""
+        from cyrp.launcher import CYRPIntegratedSystem, CYRPApplicationConfig
+
+        config = CYRPApplicationConfig()
+        config.db_path = ":memory:"  # 使用内存数据库
+
+        system = CYRPIntegratedSystem(config)
+        success = system.initialize()
+
+        assert success
+        assert 'persistence' in system._components
+        assert 'api_server' in system._components
+        assert 'ws_manager' in system._components
+        assert 'dashboard' in system._components
+
+        system.stop()
+
+    def test_health_status(self):
+        """测试健康状态"""
+        from cyrp.launcher import CYRPIntegratedSystem, CYRPApplicationConfig
+
+        config = CYRPApplicationConfig()
+        config.db_path = ":memory:"
+
+        system = CYRPIntegratedSystem(config)
+        system.initialize()
+
+        status = system.get_health_status()
+
+        assert 'status' in status
+        assert 'timestamp' in status
+        assert 'components' in status
+        assert status['status'] == 'healthy'
+
+        system.stop()
+
+    def test_collect_system_metrics(self):
+        """测试系统指标收集"""
+        from cyrp.launcher import CYRPIntegratedSystem, CYRPApplicationConfig
+
+        config = CYRPApplicationConfig()
+        config.db_path = ":memory:"
+
+        system = CYRPIntegratedSystem(config)
+        system.initialize()
+
+        metrics = system._collect_system_metrics()
+
+        assert 'flow_rate_total' in metrics
+        assert 'pressure_avg' in metrics
+        assert 'health_score' in metrics
+        assert isinstance(metrics['flow_rate_total'], float)
+
+        system.stop()
+
+    def test_create_integrated_system(self):
+        """测试创建集成系统"""
+        from cyrp.launcher import create_integrated_system, CYRPApplicationConfig
+
+        config = CYRPApplicationConfig()
+        config.db_path = ":memory:"
+
+        system = create_integrated_system(config)
+
+        assert system is not None
+        assert system._components is not None
+
+        system.stop()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
