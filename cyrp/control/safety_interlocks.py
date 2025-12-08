@@ -9,6 +9,7 @@ Safety Interlock System for CYRP.
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Dict, Callable, Any
 from enum import Enum, auto
+from abc import ABC, abstractmethod
 import numpy as np
 
 
@@ -50,9 +51,11 @@ class InterlockStatus:
     timestamp: float
 
 
-class SafetyInterlock:
+class SafetyInterlock(ABC):
     """
-    安全联锁基类
+    安全联锁抽象基类
+
+    所有具体联锁实现都必须继承此类并实现check方法
     """
 
     def __init__(
@@ -77,13 +80,14 @@ class SafetyInterlock:
         self.triggered_time = 0.0
         self.last_value = 0.0
 
+    @abstractmethod
     def check(
         self,
         value: float,
         timestamp: float
     ) -> Tuple[bool, Optional[InterlockAction]]:
         """
-        检查联锁条件
+        检查联锁条件 (抽象方法，必须由子类实现)
 
         Args:
             value: 检测值
@@ -92,7 +96,7 @@ class SafetyInterlock:
         Returns:
             是否触发, 联锁动作
         """
-        raise NotImplementedError
+        pass
 
     def reset(self):
         """重置联锁"""
