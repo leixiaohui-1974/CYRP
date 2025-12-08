@@ -789,5 +789,378 @@ class TestDashboardData:
         assert 'panels' in response
 
 
+class TestAlertManager:
+    """告警管理器测试"""
+
+    def test_alert_rule_creation(self):
+        """测试告警规则创建"""
+        from cyrp.api.monitoring_endpoints import AlertManager, AlertRule
+
+        manager = AlertManager()
+
+        # 默认规则应已创建
+        rules = manager.get_rules()
+        assert len(rules) > 0
+
+        # 添加自定义规则
+        custom_rule = AlertRule(
+            rule_id="CUSTOM_RULE_1",
+            name="自定义测试规则",
+            metric_name="test_metric",
+            condition="gt",
+            threshold=100.0,
+            severity="warning"
+        )
+        manager.add_rule(custom_rule)
+
+        rules = manager.get_rules()
+        rule_ids = [r.rule_id for r in rules]
+        assert "CUSTOM_RULE_1" in rule_ids
+
+    def test_alert_evaluation(self):
+        """测试告警评估"""
+        from cyrp.api.monitoring_endpoints import AlertManager, AlertRule
+        from cyrp.monitoring.dashboard_data import Metric, MetricType
+
+        manager = AlertManager()
+
+        # 添加测试规则
+        rule = AlertRule(
+            rule_id="TEST_HIGH_VALUE",
+            name="高值告警",
+            metric_name="test_value",
+            condition="gt",
+            threshold=50.0,
+            severity="critical",
+            cooldown_seconds=1  # 短冷却时间便于测试
+        )
+        manager.add_rule(rule)
+
+        # 创建超阈值的指标
+        metrics = {
+            "test_value": Metric(
+                name="test_value",
+                value=75.0,  # 超过阈值50
+                timestamp=1234567890.0,
+                metric_type=MetricType.GAUGE
+            )
+        }
+
+        # 评估
+        new_alerts = manager.evaluate_metrics(metrics)
+        assert len(new_alerts) > 0
+
+        # 检查告警内容
+        alert = new_alerts[0]
+        assert alert.severity == "critical"
+        assert alert.metric_value == 75.0
+
+    def test_alert_acknowledge_and_resolve(self):
+        """测试告警确认和解决"""
+        from cyrp.api.monitoring_endpoints import AlertManager, AlertRule
+        from cyrp.monitoring.dashboard_data import Metric, MetricType
+
+        manager = AlertManager()
+
+        # 添加规则
+        rule = AlertRule(
+            rule_id="TEST_RULE",
+            name="测试规则",
+            metric_name="test_metric",
+            condition="lt",
+            threshold=10.0,
+            severity="warning",
+            cooldown_seconds=0
+        )
+        manager.add_rule(rule)
+
+        # 触发告警
+        metrics = {
+            "test_metric": Metric(
+                name="test_metric",
+                value=5.0,  # 低于阈值
+                timestamp=1234567890.0,
+                metric_type=MetricType.GAUGE
+            )
+        }
+        alerts = manager.evaluate_metrics(metrics)
+        assert len(alerts) > 0
+
+        alert_id = alerts[0].alert_id
+
+        # 确认告警
+        success = manager.acknowledge_alert(alert_id, "test_user")
+        assert success
+
+        # 检查确认状态
+        active = manager.get_active_alerts()
+        alert = next((a for a in active if a.alert_id == alert_id), None)
+        assert alert is not None
+        assert alert.acknowledged
+        assert alert.acknowledged_by == "test_user"
+
+        # 解决告警
+        success = manager.resolve_alert(alert_id)
+        assert success
+
+        # 确认已从活动列表移除
+        active = manager.get_active_alerts()
+        alert = next((a for a in active if a.alert_id == alert_id), None)
+        assert alert is None
+
+    def test_alert_statistics(self):
+        """测试告警统计"""
+        from cyrp.api.monitoring_endpoints import AlertManager
+
+        manager = AlertManager()
+
+        stats = manager.get_statistics()
+        assert "total_active" in stats
+        assert "critical_count" in stats
+        assert "warning_count" in stats
+        assert "total_rules" in stats
+        assert stats["total_rules"] > 0
+
+    def test_cooldown_mechanism(self):
+        """测试冷却机制"""
+        import time
+        from cyrp.api.monitoring_endpoints import AlertManager, AlertRule
+        from cyrp.monitoring.dashboard_data import Metric, MetricType
+
+        manager = AlertManager()
+
+        # 添加带冷却的规则
+        rule = AlertRule(
+            rule_id="COOLDOWN_TEST",
+            name="冷却测试",
+            metric_name="cool_metric",
+            condition="gt",
+            threshold=100.0,
+            severity="info",
+            cooldown_seconds=60  # 60秒冷却
+        )
+        manager.add_rule(rule)
+
+        metrics = {
+            "cool_metric": Metric(
+                name="cool_metric",
+                value=150.0,
+                timestamp=time.time(),
+                metric_type=MetricType.GAUGE
+            )
+        }
+
+        # 第一次应触发
+        alerts1 = manager.evaluate_metrics(metrics)
+        triggered_count1 = sum(1 for a in alerts1 if a.rule_id == "COOLDOWN_TEST")
+        assert triggered_count1 == 1
+
+        # 立即再次评估，应被冷却阻止
+        alerts2 = manager.evaluate_metrics(metrics)
+        triggered_count2 = sum(1 for a in alerts2 if a.rule_id == "COOLDOWN_TEST")
+        assert triggered_count2 == 0
+
+
+class TestMonitoringAPI:
+    """监控API模块测试"""
+
+    def test_monitoring_module_creation(self):
+        """测试监控API模块创建"""
+        from cyrp.api.monitoring_endpoints import (
+            MonitoringAPIModule, create_monitoring_api_module
+        )
+        from cyrp.monitoring.dashboard_data import DashboardDataProvider
+
+        # 使用工厂函数
+        module = create_monitoring_api_module()
+        assert module.dashboard is not None
+        assert module.alert_manager is not None
+        assert module.router is not None
+
+        # 使用自定义组件
+        custom_dashboard = DashboardDataProvider(history_size=500)
+        module2 = MonitoringAPIModule(dashboard=custom_dashboard)
+        assert module2.dashboard == custom_dashboard
+
+    def test_router_has_routes(self):
+        """测试路由器包含路由"""
+        from cyrp.api.monitoring_endpoints import create_monitoring_api_module
+
+        module = create_monitoring_api_module()
+        router = module.router
+
+        assert len(router.routes) > 0
+
+        # 检查关键路由存在
+        route_paths = [r.path for r in router.routes]
+        assert any("/monitoring/realtime" in p for p in route_paths)
+        assert any("/monitoring/alerts" in p for p in route_paths)
+        assert any("/monitoring/prometheus" in p for p in route_paths)
+
+    def test_alert_rule_dataclass(self):
+        """测试AlertRule数据类"""
+        from cyrp.api.monitoring_endpoints import AlertRule
+
+        rule = AlertRule(
+            rule_id="TEST_RULE",
+            name="测试规则",
+            metric_name="pressure",
+            condition="gt",
+            threshold=1000000.0,
+            severity="critical",
+            message_template="压力 {value:.0f} Pa 超过阈值 {threshold:.0f} Pa"
+        )
+
+        assert rule.rule_id == "TEST_RULE"
+        assert rule.enabled == True  # 默认值
+        assert rule.cooldown_seconds == 300  # 默认值
+
+    def test_alert_dataclass(self):
+        """测试Alert数据类"""
+        from cyrp.api.monitoring_endpoints import Alert
+        import time
+
+        alert = Alert(
+            alert_id="ALT001",
+            rule_id="RULE001",
+            name="高压告警",
+            severity="warning",
+            message="压力过高",
+            metric_value=1200000.0,
+            threshold=1000000.0,
+            timestamp=time.time()
+        )
+
+        assert alert.alert_id == "ALT001"
+        assert alert.acknowledged == False  # 默认值
+        assert alert.resolved == False  # 默认值
+
+
+class TestAPIIntegration:
+    """API集成测试"""
+
+    def test_rest_api_module_import(self):
+        """测试REST API模块导入"""
+        from cyrp.api import (
+            HTTPMethod,
+            ContentType,
+            APIRequest,
+            APIResponse,
+            JWTManager,
+            RateLimiter,
+            RequestValidator,
+            APIRouter,
+            APIServer,
+            create_cyrp_api,
+            AlertRule,
+            Alert,
+            AlertManager,
+            MonitoringAPIModule,
+            create_monitoring_api_module,
+            AuthLevel,
+            RateLimitRule,
+        )
+
+        # 验证所有导出正常
+        assert HTTPMethod.GET.value == "GET"
+        assert ContentType.JSON.value == "application/json"
+        assert AuthLevel.ADMIN == "admin"
+
+    def test_api_server_with_monitoring(self):
+        """测试API服务器集成监控模块"""
+        from cyrp.api import create_cyrp_api, create_monitoring_api_module
+
+        # 创建API服务器
+        server = create_cyrp_api()
+
+        # 创建监控模块
+        monitoring = create_monitoring_api_module()
+
+        # 集成监控路由
+        server.include_router(monitoring.router)
+
+        # 检查路由已注册
+        routes = server._routes
+        monitoring_routes = [path for (path, method) in routes.keys()
+                           if '/monitoring/' in path]
+        assert len(monitoring_routes) > 0
+
+    def test_jwt_manager(self):
+        """测试JWT管理器"""
+        from cyrp.api import JWTManager
+
+        jwt = JWTManager("test-secret-key")
+
+        # 创建令牌
+        token = jwt.create_token(
+            user_id="user123",
+            username="testuser",
+            roles=["operator"]
+        )
+        assert token is not None
+        assert len(token.split('.')) == 3  # JWT格式: header.payload.signature
+
+        # 验证令牌
+        valid, payload, error = jwt.verify_token(token)
+        assert valid
+        assert payload['sub'] == "user123"
+        assert payload['username'] == "testuser"
+        assert "operator" in payload['roles']
+
+    def test_rate_limiter(self):
+        """测试速率限制器"""
+        import asyncio
+        from cyrp.api import RateLimiter
+
+        limiter = RateLimiter()
+
+        async def test_limit():
+            key = "test_client"
+            limit = 5
+
+            # 前5次应该通过
+            for i in range(5):
+                allowed = await limiter.check(key, limit, window_seconds=60)
+                assert allowed, f"Request {i+1} should be allowed"
+
+            # 第6次应该被限制
+            allowed = await limiter.check(key, limit, window_seconds=60)
+            assert not allowed, "Request 6 should be rate limited"
+
+        asyncio.run(test_limit())
+
+    def test_request_validator(self):
+        """测试请求验证器"""
+        from cyrp.api import RequestValidator
+
+        schema = {
+            "name": {"type": "string", "required": True, "minLength": 1},
+            "value": {"type": "number", "required": True, "minimum": 0},
+            "severity": {"type": "string", "enum": ["low", "medium", "high"]}
+        }
+
+        # 有效数据
+        valid_data = {"name": "test", "value": 100, "severity": "high"}
+        is_valid, errors = RequestValidator.validate(valid_data, schema)
+        assert is_valid
+        assert len(errors) == 0
+
+        # 缺少必填字段
+        invalid_data1 = {"value": 100}
+        is_valid, errors = RequestValidator.validate(invalid_data1, schema)
+        assert not is_valid
+        assert any("name" in e for e in errors)
+
+        # 值超出范围
+        invalid_data2 = {"name": "test", "value": -10}
+        is_valid, errors = RequestValidator.validate(invalid_data2, schema)
+        assert not is_valid
+
+        # 枚举值错误
+        invalid_data3 = {"name": "test", "value": 100, "severity": "invalid"}
+        is_valid, errors = RequestValidator.validate(invalid_data3, schema)
+        assert not is_valid
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
