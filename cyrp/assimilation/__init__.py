@@ -7,6 +7,7 @@ Implements fusion of observation data with model predictions
 
 from .data_assimilation import (
     DataAssimilationManager,
+    AssimilationMethod,
     KalmanFilter,
     ExtendedKalmanFilter,
     UnscentedKalmanFilter,
@@ -19,6 +20,7 @@ from .data_assimilation import (
 
 __all__ = [
     'DataAssimilationManager',
+    'AssimilationMethod',
     'KalmanFilter',
     'ExtendedKalmanFilter',
     'UnscentedKalmanFilter',

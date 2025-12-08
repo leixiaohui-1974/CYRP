@@ -8,6 +8,7 @@ Implements real-time prediction of system state
 from .state_prediction import (
     StatePredictorManager,
     ARIMAPredictor,
+    ExponentialSmoothingPredictor,
     LSTMPredictor,
     PhysicsBasedPredictor,
     EnsemblePredictor,
@@ -18,6 +19,7 @@ from .state_prediction import (
 __all__ = [
     'StatePredictorManager',
     'ARIMAPredictor',
+    'ExponentialSmoothingPredictor',
     'LSTMPredictor',
     'PhysicsBasedPredictor',
     'EnsemblePredictor',
