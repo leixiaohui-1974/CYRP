@@ -1416,5 +1416,249 @@ class TestWebSocketServer:
         assert SubscriptionChannel.ALERTS.value == "alerts"
 
 
+class TestPersistenceManager:
+    """持久化管理器测试"""
+
+    def test_metric_buffer(self):
+        """测试指标缓冲区"""
+        from cyrp.database.persistence_manager import MetricBuffer
+
+        buffer = MetricBuffer(max_size=100)
+
+        # 添加数据
+        buffer.add("flow_rate", 280.5)
+        buffer.add("flow_rate", 281.0)
+        buffer.add("pressure", 500000.0)
+
+        # 检查计数
+        assert buffer.get_count() == 3
+        assert "flow_rate" in buffer.get_metrics()
+        assert "pressure" in buffer.get_metrics()
+
+        # 获取并清空
+        data = buffer.get_and_clear()
+        assert len(data["flow_rate"]) == 2
+        assert len(data["pressure"]) == 1
+        assert buffer.get_count() == 0
+
+    def test_metric_buffer_sampling(self):
+        """测试指标采样间隔"""
+        import time
+        from cyrp.database.persistence_manager import MetricBuffer
+
+        buffer = MetricBuffer()
+
+        # 设置采样间隔
+        t1 = time.time()
+        buffer.add("test", 1.0, timestamp=t1, min_interval=1.0)
+        buffer.add("test", 2.0, timestamp=t1 + 0.5, min_interval=1.0)  # 应被忽略
+        buffer.add("test", 3.0, timestamp=t1 + 1.5, min_interval=1.0)  # 应被接受
+
+        data = buffer.get_and_clear()
+        assert len(data["test"]) == 2  # 只有2个点
+
+    def test_persistence_manager_creation(self):
+        """测试持久化管理器创建"""
+        from cyrp.database.persistence_manager import (
+            PersistenceManager, PersistenceConfig, PersistenceLevel
+        )
+        from cyrp.database.historian import SQLiteBackend
+
+        config = PersistenceConfig(
+            level=PersistenceLevel.BUFFERED,
+            buffer_size=500,
+            flush_interval=5.0
+        )
+
+        backend = SQLiteBackend(":memory:")
+        manager = PersistenceManager(backend, config)
+
+        assert manager.backend is not None
+        assert manager.config.buffer_size == 500
+
+        manager.close()
+
+    def test_record_metrics(self):
+        """测试记录指标"""
+        import time
+        from cyrp.database.persistence_manager import PersistenceManager
+        from cyrp.database.historian import SQLiteBackend
+
+        backend = SQLiteBackend(":memory:")
+        manager = PersistenceManager(backend)
+
+        # 记录指标（使用不同时间戳避免采样间隔限制）
+        t = time.time()
+        manager.record_metric("test_metric", 100.0, timestamp=t)
+        manager.record_metric("test_metric", 101.0, timestamp=t + 2)
+        manager.record_metric("test_metric", 102.0, timestamp=t + 4)
+
+        # 检查缓冲区
+        assert manager.metric_buffer.get_count() == 3
+
+        # 刷新
+        result = manager.flush_all()
+        assert result['metrics'] == 3
+
+        manager.close()
+
+    def test_record_metrics_batch(self):
+        """测试批量记录指标"""
+        from cyrp.database.persistence_manager import PersistenceManager
+        from cyrp.database.historian import SQLiteBackend
+
+        backend = SQLiteBackend(":memory:")
+        manager = PersistenceManager(backend)
+
+        # 批量记录
+        manager.record_metrics_batch({
+            "flow_rate": 280.5,
+            "pressure": 500000.0,
+            "temperature": 18.5
+        })
+
+        assert manager.metric_buffer.get_count() == 3
+
+        manager.close()
+
+    def test_record_alert(self):
+        """测试记录告警"""
+        import time
+        from cyrp.database.persistence_manager import PersistenceManager
+        from cyrp.database.historian import SQLiteBackend
+
+        backend = SQLiteBackend(":memory:")
+        manager = PersistenceManager(backend)
+
+        # 记录告警
+        manager.record_alert({
+            'alert_id': 'ALT001',
+            'rule_id': 'RULE001',
+            'name': 'Test Alert',
+            'severity': 'warning',
+            'message': 'Test message',
+            'metric_value': 100.0,
+            'threshold': 90.0,
+            'timestamp': time.time()
+        })
+
+        # 刷新
+        result = manager.flush_all()
+        assert result['alerts'] == 1
+
+        manager.close()
+
+    def test_status_snapshot(self):
+        """测试状态快照"""
+        from cyrp.database.persistence_manager import StatusSnapshotManager
+        from cyrp.database.historian import SQLiteBackend
+
+        backend = SQLiteBackend(":memory:")
+        backend.connect()
+
+        # 创建必要的时序
+        from cyrp.database.historian import TimeSeriesMetadata, DataType
+        for name in ['status_health_score', 'status_flow_rate', 'status_pressure_avg',
+                     'status_pressure_max', 'status_active_alarms']:
+            backend.create_series(TimeSeriesMetadata(
+                name=name, data_type=DataType.FLOAT
+            ))
+
+        manager = StatusSnapshotManager(backend, snapshot_interval=0)  # 无间隔限制
+
+        # 保存快照
+        success = manager.take_snapshot({
+            'health_score': 95.0,
+            'flow_rate': 280.0,
+            'pressure_avg': 500000.0,
+            'pressure_max': 550000.0,
+            'active_alarms': 0
+        })
+        assert success
+
+        # 获取最近快照
+        snapshots = manager.get_recent_snapshots(10)
+        assert len(snapshots) == 1
+        assert snapshots[0]['status']['health_score'] == 95.0
+
+        backend.disconnect()
+
+    def test_metric_persistence_rule(self):
+        """测试指标持久化规则"""
+        from cyrp.database.persistence_manager import (
+            PersistenceManager, MetricPersistenceRule, PersistenceLevel
+        )
+        from cyrp.database.historian import SQLiteBackend, AggregationType
+
+        backend = SQLiteBackend(":memory:")
+        manager = PersistenceManager(backend)
+
+        # 添加规则
+        rule = MetricPersistenceRule(
+            metric_name="custom_metric",
+            level=PersistenceLevel.BUFFERED,
+            retention_days=30,
+            sample_interval=0.5,
+            aggregation=AggregationType.MEAN
+        )
+        manager.add_metric_rule(rule)
+
+        assert "custom_metric" in manager._metric_rules
+
+        manager.close()
+
+    def test_get_stats(self):
+        """测试获取统计信息"""
+        from cyrp.database.persistence_manager import PersistenceManager
+        from cyrp.database.historian import SQLiteBackend
+
+        backend = SQLiteBackend(":memory:")
+        manager = PersistenceManager(backend)
+
+        # 记录一些数据
+        manager.record_metric("test", 100.0)
+        manager.flush_all()
+
+        stats = manager.get_stats()
+        assert 'metrics_persisted' in stats
+        assert 'flush_count' in stats
+        assert stats['flush_count'] >= 1
+
+        manager.close()
+
+    def test_create_persistence_system(self):
+        """测试创建持久化系统"""
+        from cyrp.database.persistence_manager import create_persistence_system
+
+        # 使用内存数据库
+        manager = create_persistence_system(":memory:")
+        assert manager is not None
+        assert manager.backend is not None
+
+        manager.close()
+
+    def test_database_module_import(self):
+        """测试数据库模块导入"""
+        from cyrp.database import (
+            DataType,
+            AggregationType,
+            TimeSeriesPoint,
+            TimeSeriesMetadata,
+            QueryResult,
+            StorageBackend,
+            SQLiteBackend,
+            PersistenceLevel,
+            PersistenceConfig,
+            MetricPersistenceRule,
+            MetricBuffer,
+            PersistenceManager,
+            create_persistence_system,
+        )
+
+        assert DataType.FLOAT.value == "float"
+        assert PersistenceLevel.BUFFERED.value == "buffered"
+        assert AggregationType.MEAN.value == "mean"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
