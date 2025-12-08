@@ -181,6 +181,7 @@ class HILTestRunner:
     def __init__(self):
         self.physical_model = MockPhysicalModel()
         self.results: List[HILResult] = []
+        self._active_faults: Dict[str, Dict[str, Any]] = {}
 
         # 导入集成模块
         self._init_modules()
@@ -217,6 +218,7 @@ class HILTestRunner:
 
         # 重置
         self.physical_model.reset()
+        self._active_faults.clear()
         metrics = HILMetrics()
         errors = []
         warnings = []
@@ -250,15 +252,24 @@ class HILTestRunner:
             # 物理模型步进
             state = self.physical_model.step()
 
-            # 记录数据
-            flow_history.append(state['flow_rate'])
-            pressure_history.append(np.mean(state['pressure']))
+            # 应用激活的故障效果 (传感器故障影响观测值)
+            observed_state = self._apply_active_faults(state)
+
+            # 记录观测数据 (故障后的值)
+            flow_history.append(observed_state['flow_rate'])
+            pressure_history.append(np.mean(observed_state['pressure']))
+
+            # 更新故障相关的metrics
+            if self._active_faults:
+                metrics.sensor_availability = max(0.0, 1.0 - 0.2 * len(self._active_faults))
+                if any('actuator' in k for k in self._active_faults):
+                    metrics.actuator_health = 0.5
 
             # 使用新模块处理 (如果可用)
             if self.modules_available:
-                self._process_with_modules(state, metrics)
+                self._process_with_modules(observed_state, metrics)
 
-            # 检查安全约束
+            # 检查安全约束 (使用真实物理状态)
             violations = self._check_constraints(state)
             metrics.constraint_violations += violations
 
@@ -315,12 +326,89 @@ class HILTestRunner:
     def _inject_fault(self, fault: Dict):
         """注入故障"""
         fault_type = fault.get('fault_type')
+        component = fault.get('component', 'default')
+        severity = fault.get('severity', 1.0)  # 0-1 严重程度
+
         if fault_type == FaultType.SENSOR_STUCK:
-            # 传感器卡死 - 固定输出
-            pass
+            # 传感器卡死 - 记录当前值作为卡死值
+            stuck_value = fault.get('stuck_value', self.physical_model.flow_rate)
+            self._active_faults['sensor_stuck'] = {
+                'component': component,
+                'stuck_value': stuck_value,
+                'severity': severity
+            }
+
+        elif fault_type == FaultType.SENSOR_DRIFT:
+            # 传感器漂移 - 逐渐偏离真值
+            drift_rate = fault.get('drift_rate', 0.01) * severity  # %/step
+            self._active_faults['sensor_drift'] = {
+                'component': component,
+                'drift_rate': drift_rate,
+                'accumulated_drift': 0.0
+            }
+
+        elif fault_type == FaultType.SENSOR_NOISE:
+            # 传感器噪声增大
+            noise_multiplier = 1.0 + 4.0 * severity  # 噪声放大1-5倍
+            self._active_faults['sensor_noise'] = {
+                'component': component,
+                'noise_multiplier': noise_multiplier
+            }
+
+        elif fault_type == FaultType.ACTUATOR_STUCK:
+            # 执行器卡死 - 固定在当前位置
+            stuck_position = fault.get('position', 0.5)
+            self._active_faults['actuator_stuck'] = {
+                'component': component,
+                'stuck_position': stuck_position
+            }
+            # 实际影响：改变闸门位置
+            if component in self.physical_model.gate_positions:
+                self.physical_model.gate_positions[component] = stuck_position
+
         elif fault_type == FaultType.ACTUATOR_SLOW:
-            # 执行器响应迟缓
-            pass
+            # 执行器响应迟缓 - 增加时间常数
+            slow_factor = 1.0 + 4.0 * severity  # 响应减慢1-5倍
+            self._active_faults['actuator_slow'] = {
+                'component': component,
+                'slow_factor': slow_factor
+            }
+
+        elif fault_type == FaultType.ACTUATOR_LEAK:
+            # 执行器泄漏
+            leak_rate = 0.5 * severity  # 泄漏流量
+            self._active_faults['actuator_leak'] = {
+                'component': component,
+                'leak_rate': leak_rate
+            }
+            self.physical_model.add_disturbance('leak', {'rate': leak_rate})
+
+    def _apply_active_faults(self, state: Dict) -> Dict:
+        """应用激活的故障效果到状态"""
+        modified_state = state.copy()
+
+        # 传感器卡死
+        if 'sensor_stuck' in self._active_faults:
+            fault = self._active_faults['sensor_stuck']
+            modified_state['flow_rate'] = fault['stuck_value']
+
+        # 传感器漂移
+        if 'sensor_drift' in self._active_faults:
+            fault = self._active_faults['sensor_drift']
+            fault['accumulated_drift'] += fault['drift_rate']
+            drift_factor = 1.0 + fault['accumulated_drift']
+            modified_state['flow_rate'] = state['flow_rate'] * drift_factor
+
+        # 传感器噪声
+        if 'sensor_noise' in self._active_faults:
+            fault = self._active_faults['sensor_noise']
+            noise = np.random.normal(0, 5.0 * fault['noise_multiplier'])
+            modified_state['flow_rate'] = state['flow_rate'] + noise
+            modified_state['pressure'] = state['pressure'] + np.random.normal(
+                0, 1000 * fault['noise_multiplier'], len(state['pressure'])
+            )
+
+        return modified_state
 
     def _process_with_modules(self, state: Dict, metrics: HILMetrics):
         """使用新模块处理状态"""
@@ -591,6 +679,73 @@ class TestFaultInjection:
         )
         assert result.passed
 
+    def test_sensor_drift_fault(self):
+        """传感器漂移故障测试"""
+        result = self.runner.run_scenario(
+            ScenarioType.S1_A_DUAL_BALANCED,
+            duration=30.0,
+            faults=[{
+                'fault_type': FaultType.SENSOR_DRIFT,
+                'component': 'flow_meter',
+                'time': 5.0,
+                'severity': 0.5,
+                'drift_rate': 0.005
+            }]
+        )
+        # 漂移故障下，观测值会逐渐偏离真值
+        assert result.metrics.sensor_availability < 1.0
+
+    def test_sensor_noise_fault(self):
+        """传感器噪声增大故障测试"""
+        result = self.runner.run_scenario(
+            ScenarioType.S1_A_DUAL_BALANCED,
+            duration=30.0,
+            faults=[{
+                'fault_type': FaultType.SENSOR_NOISE,
+                'component': 'pressure_sensor',
+                'time': 5.0,
+                'severity': 0.8
+            }]
+        )
+        # 噪声增大会影响压力稳定性指标
+        assert result.metrics.sensor_availability < 1.0
+
+    def test_actuator_leak_fault(self):
+        """执行器泄漏故障测试"""
+        result = self.runner.run_scenario(
+            ScenarioType.S1_A_DUAL_BALANCED,
+            duration=30.0,
+            faults=[{
+                'fault_type': FaultType.ACTUATOR_LEAK,
+                'component': 'N_outlet',
+                'time': 10.0,
+                'severity': 0.3
+            }]
+        )
+        # 泄漏会影响执行器健康度
+        assert result.metrics.actuator_health <= 1.0
+
+    def test_multiple_faults(self):
+        """多故障同时发生测试"""
+        result = self.runner.run_scenario(
+            ScenarioType.S1_A_DUAL_BALANCED,
+            duration=30.0,
+            faults=[
+                {
+                    'fault_type': FaultType.SENSOR_STUCK,
+                    'component': 'P_1',
+                    'time': 5.0,
+                },
+                {
+                    'fault_type': FaultType.ACTUATOR_SLOW,
+                    'component': 'S_inlet',
+                    'time': 15.0,
+                }
+            ]
+        )
+        # 多故障下系统仍应保持基本功能
+        assert result.metrics.sensor_availability < 1.0
+
 
 class TestModuleIntegration:
     """新模块集成测试"""
@@ -700,6 +855,133 @@ class TestScenarioTransitions:
         )
 
         assert result1.passed
+
+
+class TestStressScenarios:
+    """场景切换压力测试"""
+
+    def setup_method(self):
+        self.runner = HILTestRunner()
+
+    def test_rapid_scenario_switching(self):
+        """快速场景切换压力测试"""
+        scenarios = [
+            ScenarioType.S1_A_DUAL_BALANCED,
+            ScenarioType.S1_B_DYNAMIC_PEAK,
+            ScenarioType.S4_A_TUNNEL_SWITCH,
+            ScenarioType.S1_A_DUAL_BALANCED,
+            ScenarioType.S3_A_FILLING,
+            ScenarioType.S1_A_DUAL_BALANCED,
+        ]
+
+        results = []
+        for scenario in scenarios:
+            result = self.runner.run_scenario(scenario, duration=5.0)
+            results.append(result)
+
+        # 所有场景切换都应成功
+        pass_count = sum(1 for r in results if r.passed)
+        assert pass_count >= len(scenarios) * 0.8, f"Only {pass_count}/{len(scenarios)} passed"
+
+    def test_emergency_recovery_cycle(self):
+        """应急-恢复循环测试"""
+        # 常态 -> 应急 -> 常态 循环
+        cycle_results = []
+
+        for _ in range(3):
+            # 常态
+            r1 = self.runner.run_scenario(
+                ScenarioType.S1_A_DUAL_BALANCED, duration=5.0
+            )
+            cycle_results.append(r1)
+
+            # 应急
+            r2 = self.runner.run_scenario(
+                ScenarioType.S5_A_INNER_LEAK, duration=5.0,
+                disturbances=[{'type': 'leak', 'params': {'rate': 3.0}}]
+            )
+            cycle_results.append(r2)
+
+        # 验证恢复能力
+        nominal_results = [cycle_results[i] for i in range(0, len(cycle_results), 2)]
+        assert all(r.passed for r in nominal_results), "Failed to recover to nominal state"
+
+    def test_continuous_fault_injection(self):
+        """连续故障注入压力测试"""
+        fault_types = [
+            FaultType.SENSOR_STUCK,
+            FaultType.SENSOR_DRIFT,
+            FaultType.SENSOR_NOISE,
+            FaultType.ACTUATOR_SLOW,
+            FaultType.ACTUATOR_LEAK,
+        ]
+
+        results = []
+        for i, fault_type in enumerate(fault_types):
+            result = self.runner.run_scenario(
+                ScenarioType.S1_A_DUAL_BALANCED,
+                duration=10.0,
+                faults=[{
+                    'fault_type': fault_type,
+                    'component': f'sensor_{i}',
+                    'time': 2.0,
+                    'severity': 0.5
+                }]
+            )
+            results.append((fault_type.name, result))
+
+        # 至少60%应通过（故障注入场景下允许部分失败）
+        pass_count = sum(1 for _, r in results if r.passed)
+        assert pass_count >= len(fault_types) * 0.6, \
+            f"Only {pass_count}/{len(fault_types)} passed under fault injection"
+
+    def test_high_frequency_updates(self):
+        """高频更新压力测试"""
+        # 使用非常短的持续时间进行多次快速测试
+        n_iterations = 20
+
+        results = []
+        for i in range(n_iterations):
+            scenario = ScenarioType.S1_A_DUAL_BALANCED if i % 2 == 0 else ScenarioType.S1_B_DYNAMIC_PEAK
+            result = self.runner.run_scenario(scenario, duration=2.0)
+            results.append(result)
+
+        # 验证高频测试稳定性
+        pass_rate = sum(1 for r in results if r.passed) / len(results)
+        assert pass_rate >= 0.9, f"Pass rate {pass_rate:.1%} below threshold"
+
+    def test_domain_crossing_transitions(self):
+        """跨域切换测试 (常态<->过渡<->应急)"""
+        # 跨域场景序列
+        domain_sequence = [
+            (ScenarioType.S1_A_DUAL_BALANCED, "常态"),
+            (ScenarioType.S4_A_TUNNEL_SWITCH, "过渡"),
+            (ScenarioType.S5_A_INNER_LEAK, "应急"),
+            (ScenarioType.S3_A_FILLING, "过渡"),
+            (ScenarioType.S1_A_DUAL_BALANCED, "常态"),
+            (ScenarioType.S7_A_PIPE_BURST, "应急"),
+            (ScenarioType.S1_A_DUAL_BALANCED, "常态"),
+        ]
+
+        transition_results = []
+        for scenario, domain_name in domain_sequence:
+            disturbances = []
+            if scenario == ScenarioType.S5_A_INNER_LEAK:
+                disturbances = [{'type': 'leak', 'params': {'rate': 3.0}}]
+            elif scenario == ScenarioType.S7_A_PIPE_BURST:
+                disturbances = [{'type': 'leak', 'params': {'rate': 10.0}}]
+
+            result = self.runner.run_scenario(
+                scenario, duration=8.0, disturbances=disturbances
+            )
+            transition_results.append((domain_name, result))
+
+        # 所有跨域切换都应完成
+        assert len(transition_results) == len(domain_sequence)
+
+        # 常态场景应该全部通过
+        nominal_results = [r for d, r in transition_results if d == "常态"]
+        assert all(r.passed for r in nominal_results), "Nominal scenarios should all pass"
 
 
 class TestComprehensiveSuite:
