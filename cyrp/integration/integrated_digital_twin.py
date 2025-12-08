@@ -342,6 +342,136 @@ class IntegratedDigitalTwin:
             'parameter_confidence': self.twin_state.parameter_confidence,
         }
 
+    def get_comprehensive_status(self) -> Dict[str, Any]:
+        """
+        获取全面的状态报告
+
+        返回数字孪生系统的完整状态信息，包括：
+        - 系统健康状态
+        - 预测质量评估
+        - 参数置信度
+        - 异常检测结果
+        """
+        status = {
+            # 基础信息
+            'timestamp': time.time(),
+            'system_health': self._assess_health(),
+
+            # 同步状态
+            'sync': {
+                'count': self.stats.get('sync_count', 0),
+                'last_sync': self.twin_state.timestamp,
+                'data_freshness': self._calculate_data_freshness(),
+            },
+
+            # 预测状态
+            'prediction': {
+                'enabled': self.enable_prediction,
+                'count': self.stats.get('prediction_count', 0),
+                'confidence': self.twin_state.prediction_confidence,
+                'horizon_seconds': self.twin_state.prediction_horizon,
+                'accuracy': self._calculate_prediction_accuracy(),
+            },
+
+            # 参数状态
+            'parameters': {
+                'enabled': self.enable_idz_update,
+                'update_count': self.stats.get('parameter_updates', 0),
+                'confidence': self.twin_state.parameter_confidence,
+                'values': self.model_parameters.copy(),
+                'last_update': self.twin_state.last_parameter_update,
+            },
+
+            # 数据同化状态
+            'assimilation': {
+                'enabled': self.enable_assimilation,
+                'count': self.stats.get('assimilation_count', 0),
+                'innovation_variance': self._get_innovation_variance(),
+            },
+
+            # 模型精度
+            'model': {
+                'accuracy': self.twin_state.model_accuracy,
+                'state_dimension': self.state_dim,
+                'history_length': len(self.state_history),
+            },
+
+            # 异常检测
+            'anomalies': self._detect_anomalies(),
+        }
+
+        return status
+
+    def _assess_health(self) -> str:
+        """评估系统健康状态"""
+        if self.twin_state.model_accuracy > 0.9 and self.twin_state.prediction_confidence > 0.8:
+            return "excellent"
+        elif self.twin_state.model_accuracy > 0.7 and self.twin_state.prediction_confidence > 0.6:
+            return "good"
+        elif self.twin_state.model_accuracy > 0.5:
+            return "degraded"
+        return "poor"
+
+    def _calculate_data_freshness(self) -> float:
+        """计算数据新鲜度 (0-1)"""
+        if not self.state_history:
+            return 0.0
+        elapsed = time.time() - self.twin_state.timestamp
+        # 假设10秒内的数据是新鲜的
+        return max(0.0, 1.0 - elapsed / 10.0)
+
+    def _calculate_prediction_accuracy(self) -> float:
+        """计算预测精度"""
+        if len(self.prediction_history) < 2:
+            return 1.0
+
+        recent = list(self.prediction_history)[-100:]
+        errors = [p.get('error', 0) for p in recent if 'error' in p]
+
+        if not errors:
+            return 1.0
+
+        mae = np.mean(np.abs(errors))
+        # 归一化到0-1
+        return max(0.0, 1.0 - mae / 100.0)
+
+    def _get_innovation_variance(self) -> float:
+        """获取卡尔曼滤波新息方差"""
+        if self.kalman_filter is None:
+            return 0.0
+        try:
+            return float(np.trace(self.kalman_filter.P))
+        except Exception:
+            return 0.0
+
+    def _detect_anomalies(self) -> Dict[str, Any]:
+        """检测异常"""
+        anomalies = {
+            'detected': False,
+            'types': [],
+            'severity': 0
+        }
+
+        # 检查预测置信度
+        if self.twin_state.prediction_confidence < 0.3:
+            anomalies['detected'] = True
+            anomalies['types'].append('low_prediction_confidence')
+            anomalies['severity'] = max(anomalies['severity'], 2)
+
+        # 检查模型精度
+        if self.twin_state.model_accuracy < 0.5:
+            anomalies['detected'] = True
+            anomalies['types'].append('low_model_accuracy')
+            anomalies['severity'] = max(anomalies['severity'], 3)
+
+        # 检查数据新鲜度
+        if self._calculate_data_freshness() < 0.3:
+            anomalies['detected'] = True
+            anomalies['types'].append('stale_data')
+            anomalies['severity'] = max(anomalies['severity'], 1)
+
+        return anomalies
+
     def reset(self):
         """重置系统"""
         self.state_history.clear()

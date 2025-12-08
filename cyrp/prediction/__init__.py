@@ -16,7 +16,16 @@ from .state_prediction import (
     PredictionInterval,
 )
 
+from .uncertainty_quantification import (
+    UncertaintyEstimate,
+    BayesianUncertaintyQuantifier,
+    EnsembleUncertaintyFusion,
+    ConformalPredictor,
+    UncertaintyMonitor,
+)
+
 __all__ = [
+    # 预测器
     'StatePredictorManager',
     'ARIMAPredictor',
     'ExponentialSmoothingPredictor',
@@ -25,4 +34,10 @@ __all__ = [
     'EnsemblePredictor',
     'PredictionResult',
     'PredictionInterval',
+    # 不确定性量化
+    'UncertaintyEstimate',
+    'BayesianUncertaintyQuantifier',
+    'EnsembleUncertaintyFusion',
+    'ConformalPredictor',
+    'UncertaintyMonitor',
 ]

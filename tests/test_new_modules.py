@@ -494,6 +494,115 @@ class TestStatePrediction:
         assert len(result.predictions) == 10
 
 
+class TestUncertaintyQuantification:
+    """不确定性量化测试"""
+
+    def test_bayesian_quantifier(self):
+        """测试贝叶斯不确定性量化器"""
+        from cyrp.prediction.uncertainty_quantification import BayesianUncertaintyQuantifier
+
+        quantifier = BayesianUncertaintyQuantifier(
+            prior_variance=1.0,
+            observation_noise=0.1
+        )
+
+        # 模拟预测和实际值
+        for i in range(50):
+            predicted = 100 + np.sin(i * 0.1) * 5
+            actual = predicted + np.random.randn() * 2
+            quantifier.update_posterior(predicted, actual)
+
+        # 量化不确定性
+        predictions = np.array([100.0, 101.0, 102.0, 103.0, 104.0])
+        estimate = quantifier.quantify(predictions)
+
+        assert estimate.mean is not None
+        assert estimate.variance is not None
+        assert len(estimate.aleatoric) == len(predictions)
+        assert len(estimate.epistemic) == len(predictions)
+
+        # 获取置信区间
+        lower, upper = estimate.get_interval(0.95)
+        assert np.all(lower < estimate.mean)
+        assert np.all(upper > estimate.mean)
+
+    def test_ensemble_fusion(self):
+        """测试集成不确定性融合"""
+        from cyrp.prediction.uncertainty_quantification import EnsembleUncertaintyFusion
+
+        fusion = EnsembleUncertaintyFusion(n_models=3)
+
+        # 三个模型的预测
+        predictions = [
+            np.array([100.0, 101.0, 102.0]),
+            np.array([100.5, 101.5, 102.5]),
+            np.array([99.5, 100.5, 101.5])
+        ]
+        variances = [
+            np.array([1.0, 1.5, 2.0]),
+            np.array([1.2, 1.8, 2.5]),
+            np.array([0.8, 1.2, 1.8])
+        ]
+
+        estimate = fusion.fuse(predictions, variances)
+
+        assert estimate.mean is not None
+        assert len(estimate.mean) == 3
+        assert estimate.epistemic is not None  # 模型间分歧
+
+        # 更新权重
+        fusion.update_weights([0.5, 1.0, 0.3])
+        assert np.sum(fusion.model_weights) - 1.0 < 1e-6
+
+    def test_conformal_predictor(self):
+        """测试保型预测"""
+        from cyrp.prediction.uncertainty_quantification import ConformalPredictor
+
+        predictor = ConformalPredictor(coverage=0.95)
+
+        # 模拟历史数据
+        for i in range(100):
+            predicted = 50 + i * 0.1
+            actual = predicted + np.random.randn() * 2
+            predictor.update(predicted, actual)
+
+        # 预测区间
+        lower, upper = predictor.predict_interval(60.0)
+        assert lower < 60.0
+        assert upper > 60.0
+
+        # 批量预测
+        predictions = np.array([60.0, 61.0, 62.0])
+        lowers, uppers = predictor.predict_intervals_batch(predictions)
+        assert len(lowers) == 3
+        assert np.all(lowers < predictions)
+        assert np.all(uppers > predictions)
+
+    def test_uncertainty_monitor(self):
+        """测试不确定性监控器"""
+        from cyrp.prediction.uncertainty_quantification import UncertaintyMonitor
+
+        monitor = UncertaintyMonitor(warning_threshold=2.0, critical_threshold=3.0)
+
+        # 建立基线
+        for i in range(100):
+            monitor.update(1.0 + np.random.randn() * 0.2)
+
+        # 正常状态
+        assert monitor.check_status(1.0) == "normal"
+
+        # 预警状态
+        assert monitor.check_status(2.5) == "warning"
+
+        # 严重状态
+        assert monitor.check_status(4.0) == "critical"
+
+        # 统计信息
+        stats = monitor.get_statistics()
+        assert 'mean' in stats
+        assert 'baseline' in stats
+
+
 class TestIntegration:
     """集成测试"""
 
