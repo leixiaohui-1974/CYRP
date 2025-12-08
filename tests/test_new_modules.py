@@ -696,5 +696,98 @@ class TestIntegration:
         assert 'mean_rmse' in accuracy
 
 
+class TestDashboardData:
+    """仪表板数据测试"""
+
+    def test_dashboard_provider(self):
+        """测试仪表板数据提供器"""
+        from cyrp.monitoring.dashboard_data import DashboardDataProvider
+
+        provider = DashboardDataProvider(history_size=1000)
+
+        # 记录指标
+        for i in range(100):
+            provider.record_metric('flow_rate_total', 280 + np.sin(i * 0.1) * 10)
+            provider.record_metric('pressure_avg', 500000 + np.cos(i * 0.1) * 10000)
+
+        # 获取当前指标
+        current = provider.get_current_metrics()
+        assert 'flow_rate_total' in current
+        assert 'pressure_avg' in current
+
+        # 获取历史
+        history = provider.get_metric_history('flow_rate_total', limit=50)
+        assert len(history) <= 50
+
+    def test_prometheus_format(self):
+        """测试Prometheus格式输出"""
+        from cyrp.monitoring.dashboard_data import DashboardDataProvider
+
+        provider = DashboardDataProvider()
+        provider.record_metric('flow_rate_total', 280.5, labels={'tunnel': 'north'})
+
+        prometheus_output = provider.get_prometheus_metrics()
+        assert 'flow_rate_total' in prometheus_output
+        assert '280.5' in prometheus_output
+
+    def test_system_status(self):
+        """测试系统状态"""
+        from cyrp.monitoring.dashboard_data import (
+            DashboardDataProvider, MetricsCollector, SystemStatus
+        )
+
+        provider = DashboardDataProvider()
+        collector = MetricsCollector(provider)
+
+        # 创建系统状态
+        status = collector.create_system_status(
+            health_score=85.0,
+            flow_rate=275.0,
+            pressure_avg=500000.0,
+            pressure_max=550000.0,
+            water_level=6.0,
+            active_alarms=0
+        )
+
+        assert status.overall_health == 'good'
+        assert status.health_score == 85.0
+        assert status.hydraulic_status == 'normal'
+
+        # 更新到提供器
+        provider.update_system_status(status)
+
+        # 获取实时快照
+        snapshot = provider.get_realtime_snapshot()
+        assert snapshot['system']['health'] == 'good'
+
+    def test_grafana_dashboard(self):
+        """测试Grafana仪表板配置"""
+        from cyrp.monitoring.dashboard_data import DashboardDataProvider
+
+        provider = DashboardDataProvider()
+        dashboard = provider.get_grafana_dashboard()
+
+        assert 'title' in dashboard
+        assert 'panels' in dashboard
+        assert len(dashboard['panels']) > 0
+        assert dashboard['title'] == 'CYRP 穿黄工程监控仪表板'
+
+    def test_api_response(self):
+        """测试API响应格式"""
+        from cyrp.monitoring.dashboard_data import DashboardDataProvider
+
+        provider = DashboardDataProvider()
+        provider.record_batch({
+            'flow_rate_total': 280.0,
+            'pressure_avg': 500000.0,
+            'health_score': 90.0
+        })
+
+        response = provider.get_api_response()
+        assert 'timestamp' in response
+        assert 'metrics' in response
+        assert 'panels' in response
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

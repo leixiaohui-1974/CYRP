@@ -19,7 +19,17 @@ from cyrp.monitoring.performance import (
     create_cyrp_monitoring_system,
 )
 
+from cyrp.monitoring.dashboard_data import (
+    MetricType as DashboardMetricType,
+    Metric,
+    DashboardPanel,
+    SystemStatus,
+    DashboardDataProvider,
+    MetricsCollector,
+)
+
 __all__ = [
+    # Performance monitoring
     "MetricType",
     "HealthStatus",
     "MetricValue",
@@ -33,4 +43,11 @@ __all__ = [
     "PerformanceMonitor",
     "ApplicationProfiler",
     "create_cyrp_monitoring_system",
+    # Dashboard data
+    "DashboardMetricType",
+    "Metric",
+    "DashboardPanel",
+    "SystemStatus",
+    "DashboardDataProvider",
+    "MetricsCollector",
 ]
