@@ -1162,5 +1162,259 @@ class TestAPIIntegration:
         assert not is_valid
 
 
+class TestWebSocketServer:
+    """WebSocket服务器测试"""
+
+    def test_connection_manager(self):
+        """测试连接管理器"""
+        from cyrp.communication.websocket_server import WebSocketConnectionManager
+
+        manager = WebSocketConnectionManager()
+
+        # 连接客户端
+        client = manager.connect("client_1", user_id="user_1")
+        assert client.client_id == "client_1"
+        assert client.user_id == "user_1"
+        assert client.is_connected
+
+        # 获取客户端
+        retrieved = manager.get_client("client_1")
+        assert retrieved == client
+
+        # 获取所有客户端
+        all_clients = manager.get_all_clients()
+        assert len(all_clients) == 1
+
+        # 断开连接
+        manager.disconnect("client_1")
+        assert manager.get_client("client_1") is None
+
+    def test_subscription(self):
+        """测试订阅功能"""
+        from cyrp.communication.websocket_server import (
+            WebSocketConnectionManager, SubscriptionChannel
+        )
+
+        manager = WebSocketConnectionManager()
+
+        # 连接客户端
+        manager.connect("client_1")
+        manager.connect("client_2")
+
+        # 订阅频道
+        success = manager.subscribe("client_1", SubscriptionChannel.ALERTS)
+        assert success
+
+        manager.subscribe("client_1", SubscriptionChannel.METRICS)
+        manager.subscribe("client_2", SubscriptionChannel.ALERTS)
+
+        # 检查订阅者
+        alert_subs = manager.get_subscribers(SubscriptionChannel.ALERTS)
+        assert "client_1" in alert_subs
+        assert "client_2" in alert_subs
+
+        metric_subs = manager.get_subscribers(SubscriptionChannel.METRICS)
+        assert "client_1" in metric_subs
+        assert "client_2" not in metric_subs
+
+        # 取消订阅
+        manager.unsubscribe("client_1", SubscriptionChannel.ALERTS)
+        alert_subs = manager.get_subscribers(SubscriptionChannel.ALERTS)
+        assert "client_1" not in alert_subs
+
+    def test_websocket_message(self):
+        """测试WebSocket消息"""
+        from cyrp.communication.websocket_server import WebSocketMessage, MessageType
+
+        # 创建消息
+        msg = WebSocketMessage(
+            type=MessageType.ALERT,
+            payload={"alert_id": "ALT001", "severity": "critical"}
+        )
+
+        # 序列化
+        json_str = msg.to_json()
+        assert "alert" in json_str
+        assert "ALT001" in json_str
+
+        # 反序列化
+        parsed = WebSocketMessage.from_json(json_str)
+        assert parsed.type == MessageType.ALERT
+        assert parsed.payload["alert_id"] == "ALT001"
+
+    def test_message_handling(self):
+        """测试消息处理"""
+        import asyncio
+        from cyrp.communication.websocket_server import (
+            WebSocketConnectionManager, WebSocketMessage,
+            MessageType, SubscriptionChannel
+        )
+
+        manager = WebSocketConnectionManager()
+        manager.connect("client_1")
+
+        async def test_handlers():
+            # 测试订阅消息处理
+            subscribe_msg = WebSocketMessage(
+                type=MessageType.SUBSCRIBE,
+                payload={"channel": "alerts"}
+            )
+            response = await manager.handle_message("client_1", subscribe_msg)
+            assert response is not None
+            assert response.type == MessageType.SUBSCRIBED
+            assert response.payload["success"]
+
+            # 验证订阅生效
+            subs = manager.get_subscribers(SubscriptionChannel.ALERTS)
+            assert "client_1" in subs
+
+            # 测试心跳消息处理
+            heartbeat_msg = WebSocketMessage(
+                type=MessageType.HEARTBEAT,
+                payload={}
+            )
+            response = await manager.handle_message("client_1", heartbeat_msg)
+            assert response is not None
+            assert response.type == MessageType.HEARTBEAT
+            assert "server_time" in response.payload
+
+        asyncio.run(test_handlers())
+
+    def test_realtime_push_service(self):
+        """测试实时推送服务"""
+        import asyncio
+        from cyrp.communication.websocket_server import (
+            RealtimePushService, WebSocketConnectionManager, SubscriptionChannel
+        )
+
+        manager = WebSocketConnectionManager()
+        service = RealtimePushService(manager)
+
+        # 连接并订阅
+        manager.connect("client_1")
+        manager.subscribe("client_1", SubscriptionChannel.ALERTS)
+        manager.subscribe("client_1", SubscriptionChannel.METRICS)
+
+        async def test_push():
+            # 推送告警
+            count = await service.push_alert({
+                "alert_id": "ALT001",
+                "severity": "warning",
+                "message": "Test alert"
+            })
+            assert count == 1
+
+            # 推送指标
+            count = await service.push_metric("flow_rate", 280.5)
+            assert count == 1
+
+            # 批量推送
+            count = await service.push_metrics_batch({
+                "flow_rate": 280.5,
+                "pressure": 500000.0,
+                "temperature": 18.5
+            })
+            assert count == 1
+
+            # 检查消息队列
+            client = manager.get_client("client_1")
+            assert client.message_queue.qsize() == 3
+
+        asyncio.run(test_push())
+
+    def test_buffer_and_flush(self):
+        """测试缓冲和刷新"""
+        import asyncio
+        from cyrp.communication.websocket_server import (
+            RealtimePushService, WebSocketConnectionManager, SubscriptionChannel
+        )
+
+        manager = WebSocketConnectionManager()
+        service = RealtimePushService(manager)
+
+        manager.connect("client_1")
+        manager.subscribe("client_1", SubscriptionChannel.ALERTS)
+        manager.subscribe("client_1", SubscriptionChannel.METRICS)
+
+        # 缓冲数据
+        service.buffer_alert({"alert_id": "ALT001"})
+        service.buffer_alert({"alert_id": "ALT002"})
+        service.buffer_metric("flow_rate", 280.0)
+        service.buffer_metric("pressure", 500000.0)
+
+        async def test_flush():
+            result = await service.flush_buffers()
+            assert result["alerts"] == 2  # 2条告警
+            assert result["metrics"] == 1  # 1次批量推送
+
+        asyncio.run(test_flush())
+
+    def test_stats(self):
+        """测试统计信息"""
+        from cyrp.communication.websocket_server import (
+            WebSocketConnectionManager, SubscriptionChannel
+        )
+
+        manager = WebSocketConnectionManager()
+
+        # 连接多个客户端
+        manager.connect("client_1")
+        manager.connect("client_2")
+        manager.connect("client_3")
+
+        manager.subscribe("client_1", SubscriptionChannel.ALERTS)
+        manager.subscribe("client_2", SubscriptionChannel.ALERTS)
+        manager.subscribe("client_2", SubscriptionChannel.METRICS)
+
+        stats = manager.get_stats()
+        assert stats["active_connections"] == 3
+        assert stats["total_connections"] == 3
+        assert stats["channels"]["alerts"] == 2
+        assert stats["channels"]["metrics"] == 1
+
+    def test_stale_connection_cleanup(self):
+        """测试过期连接清理"""
+        import time
+        from cyrp.communication.websocket_server import WebSocketConnectionManager
+
+        manager = WebSocketConnectionManager()
+
+        # 连接客户端
+        client = manager.connect("client_1")
+        # 模拟心跳超时
+        client.last_heartbeat = time.time() - 120  # 2分钟前
+
+        # 清理过期连接（60秒超时）
+        cleaned = manager.cleanup_stale_connections(timeout=60.0)
+        assert "client_1" in cleaned
+        assert manager.get_client("client_1") is None
+
+    def test_create_realtime_push_system(self):
+        """测试创建实时推送系统"""
+        from cyrp.communication.websocket_server import create_realtime_push_system
+
+        # 不带事件总线
+        system = create_realtime_push_system()
+        assert system["connection_manager"] is not None
+        assert system["push_service"] is not None
+        assert system["bridge"] is None
+
+    def test_communication_module_import(self):
+        """测试通信模块导入"""
+        from cyrp.communication import (
+            MessageType,
+            SubscriptionChannel,
+            WebSocketMessage,
+            WebSocketClient,
+            WebSocketConnectionManager,
+            RealtimePushService,
+            EventBusWebSocketBridge,
+            create_realtime_push_system,
+        )
+
+        assert MessageType.ALERT.value == "alert"
+        assert SubscriptionChannel.ALERTS.value == "alerts"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

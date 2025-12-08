@@ -7,6 +7,7 @@ Industrial Communication Module for CYRP
 - OPC-UA
 - IEC 61850
 - IEC 60870-5-104
+- WebSocket 实时推送
 """
 
 from cyrp.communication.protocols import (
@@ -37,7 +38,19 @@ from cyrp.communication.protocols import (
     create_cyrp_communication_system,
 )
 
+from cyrp.communication.websocket_server import (
+    MessageType,
+    SubscriptionChannel,
+    WebSocketMessage,
+    WebSocketClient,
+    WebSocketConnectionManager,
+    RealtimePushService,
+    EventBusWebSocketBridge,
+    create_realtime_push_system,
+)
+
 __all__ = [
+    # 工业协议
     "ProtocolType",
     "ConnectionState",
     "DataQuality",
@@ -57,4 +70,13 @@ __all__ = [
     "IEC104TypeId",
     "CommunicationManager",
     "create_cyrp_communication_system",
+    # WebSocket 实时推送
+    "MessageType",
+    "SubscriptionChannel",
+    "WebSocketMessage",
+    "WebSocketClient",
+    "WebSocketConnectionManager",
+    "RealtimePushService",
+    "EventBusWebSocketBridge",
+    "create_realtime_push_system",
 ]
